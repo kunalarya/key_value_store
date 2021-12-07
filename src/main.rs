@@ -1,4 +1,5 @@
 mod file_store;
+mod load_test;
 mod mem_store;
 mod store;
 
@@ -9,7 +10,7 @@ use anyhow::Result;
 use structopt::StructOpt;
 
 use crate::mem_store::MemoryStore;
-use crate::store::{Blob, Store};
+use crate::store::StoreError;
 
 /// Run different key-value store implementations under load.
 #[derive(StructOpt, Debug)]
@@ -22,6 +23,14 @@ struct LoadTestOptions {
     /// Type of backend.
     #[structopt(subcommand)]
     backend: Backend,
+
+    /// Emulated load pattern.
+    #[structopt(long, default_value = "consistent")]
+    pattern: load_test::LoadPattern,
+
+    /// How long to generate loads for.
+    #[structopt(long, default_value = "60")]
+    load_time_sec: u64,
 }
 
 #[derive(StructOpt, Debug)]
@@ -47,8 +56,13 @@ enum Backend {
 }
 
 fn run(opts: LoadTestOptions) -> Result<()> {
-    match opts.backend {
-        Backend::Memory => load_test(opts.threads, MemoryStore::new()),
+    let load_params = load_test::LoadParams {
+        threads: opts.threads,
+        load_pattern: opts.pattern,
+        tot_time: Duration::from_secs(opts.load_time_sec),
+    };
+    let all_stats = match opts.backend {
+        Backend::Memory => load_test::load_test(MemoryStore::new(), load_params),
         Backend::File {
             output,
             file_count,
@@ -65,33 +79,35 @@ fn run(opts: LoadTestOptions) -> Result<()> {
             let flush_period = Duration::from_micros(flush_period_us);
             let backend =
                 file_store::FileStore::new(&output_path, file_count, flush_period, serializer)?;
-            load_test(opts.threads, backend)
+            load_test::load_test(backend, load_params)
         }
-    }
-}
+    }?;
 
-fn single_tester<S: Store>(mut store: S) -> Result<()> {
-    store.put("foo", Blob::Str("foo".to_string()))?;
+    summarize(&all_stats)?;
     Ok(())
 }
 
-fn load_test<S: Store>(threads: usize, mut store: S) -> Result<()> {
-    use crossbeam::thread;
-    thread::scope(|s| {
-        for _ in 0..threads {
-            let thread_store = store.spawn().expect("Could not spawn store.");
-            s.spawn(|_| single_tester(thread_store));
-        }
-    })
-    .unwrap();
+fn summarize(all_stats: &[load_test::Stats]) -> Result<()> {
+    let total_ops: i64 = all_stats.iter().map(|s| s.ops.0).sum();
+    let total_runtime = all_stats
+        .iter()
+        .map(|s| s.runtime)
+        .max()
+        .ok_or(StoreError::NoThreadsCompleted)?;
+
+    let total_ops_per_sec = total_ops as f64 / total_runtime.as_secs_f64();
+
+    log::info!("total_ops: {}", total_ops);
+    log::info!("total_runtime: {:?}", total_runtime);
+    log::info!("total_ops_per_sec: {}", total_ops_per_sec);
     Ok(())
 }
 
 fn main() -> Result<()> {
-    env_logger::init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     let opt = LoadTestOptions::from_args();
-    println!("{:?}", opt);
+    log::info!("Using config: {:#?}", opt);
     run(opt)?;
     Ok(())
 }

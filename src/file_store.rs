@@ -9,15 +9,20 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use structopt::clap::arg_enum;
 
 use crate::mem_store::MemoryStoreSingleThreaded;
 use crate::store::{Blob, Store, StoreError};
 
-#[derive(Clone, Debug)]
-pub enum Serializer {
-    Json,
+arg_enum! {
+    #[derive(Clone, Debug)]
+    pub enum Serializer {
+        Json,
+        // TODO: Add ciborium and speedy as options.
+    }
 }
 
+/*
 impl std::str::FromStr for Serializer {
     type Err = StoreError;
 
@@ -28,6 +33,7 @@ impl std::str::FromStr for Serializer {
         }
     }
 }
+*/
 
 impl Serializer {
     fn write<T: Serialize, W: Write>(&self, writer: W, value: &T) -> Result<()> {

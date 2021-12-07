@@ -18,8 +18,8 @@ pub enum StoreError {
     LockError,
     #[error("bad file hash: {0}")]
     BadFileHash(usize),
-    #[error("unknown serializer: {0}")]
-    UnknownSerializer(String),
+    #[error("no threads completed")]
+    NoThreadsCompleted,
 }
 
 pub trait Store: Sized + Send {
