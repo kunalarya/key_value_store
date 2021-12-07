@@ -1,9 +1,10 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum Blob {
     Null,
     Str(String),
@@ -15,9 +16,14 @@ pub enum Blob {
 pub enum StoreError {
     #[error("lock failed to acquire")]
     LockError,
+    #[error("bad file hash: {0}")]
+    BadFileHash(usize),
+    #[error("unknown serializer: {0}")]
+    UnknownSerializer(String),
 }
 
-pub trait Store {
+pub trait Store: Sized + Send {
     fn get(&self, key: &str) -> Result<Blob>;
     fn put(&mut self, key: &str, value: Blob) -> Result<()>;
+    fn spawn(&mut self) -> Result<Self>;
 }

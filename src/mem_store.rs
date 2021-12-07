@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{bail, Result};
+use serde::{Deserialize, Serialize};
 
 use crate::store::{Blob, Store, StoreError};
 
@@ -33,5 +34,44 @@ impl Store for MemoryStore {
         let mut values = self.values.lock().map_err(|_| StoreError::LockError)?;
         values.insert(key.to_string(), value);
         Ok(())
+    }
+
+    fn spawn(&mut self) -> Result<Self> {
+        Ok(MemoryStore {
+            values: Arc::clone(&self.values),
+        })
+    }
+}
+
+/// Same as MemoryStore, but not thread safe.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct MemoryStoreSingleThreaded {
+    values: HashMap<String, Blob>,
+}
+
+impl MemoryStoreSingleThreaded {
+    pub fn new() -> Self {
+        Self {
+            values: HashMap::with_capacity(128),
+        }
+    }
+}
+
+impl Store for MemoryStoreSingleThreaded {
+    fn get(&self, key: &str) -> Result<Blob> {
+        if let Some(value) = self.values.get(key) {
+            Ok(value.clone())
+        } else {
+            bail!("Key not found: {}", key)
+        }
+    }
+
+    fn put(&mut self, key: &str, value: Blob) -> Result<()> {
+        self.values.insert(key.to_string(), value);
+        Ok(())
+    }
+
+    fn spawn(&mut self) -> Result<Self> {
+        bail!("Spawning is not supported on {:?}", self)
     }
 }
