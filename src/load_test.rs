@@ -136,7 +136,7 @@ pub fn summarize(all_stats: &[Stats]) -> Result<()> {
     let average_ops_per_sec = sum_ops_per_sec / all_stats.len() as f64;
 
     for s in all_stats {
-        log::info!("{:#?}", s);
+        log::trace!("{:#?}", s);
     }
 
     log::info!("total_ops: {}", total_ops);
