@@ -18,7 +18,8 @@ arg_enum! {
     #[derive(Clone, Debug)]
     pub enum Serializer {
         Json,
-        // TODO: Add ciborium and speedy as options.
+        Cbor,
+        // TODO: Add speedy as an option.
     }
 }
 
@@ -27,6 +28,7 @@ impl Serializer {
         #[allow(clippy::match_single_binding)]
         match self {
             Self::Json => serde_json::to_writer(writer, value)?,
+            Self::Cbor => ciborium::ser::into_writer(value, writer)?,
             // Add new serialization formats here.
         };
         Ok(())
@@ -36,6 +38,7 @@ impl Serializer {
         #[allow(clippy::match_single_binding)]
         Ok(match self {
             Self::Json => serde_json::from_reader(reader)?,
+            Self::Cbor => ciborium::de::from_reader(reader)?,
             // Add new serialization formats here.
         })
     }
