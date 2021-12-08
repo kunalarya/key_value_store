@@ -6,11 +6,10 @@ mod store;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use structopt::StructOpt;
 
 use crate::mem_store::MemoryStore;
-use crate::store::StoreError;
 
 /// Run different key-value store implementations under load.
 #[derive(StructOpt, Debug)]
@@ -45,9 +44,15 @@ enum Backend {
         #[structopt(long)]
         file_count: usize,
 
-        /// How often to persist changes to disk, in microseconds.
-        #[structopt(long, default_value = "500")]
-        flush_period_us: u64,
+        /// How often to persist changes to disk, in microseconds. Implies synchronous writing;
+        /// mutually exclusive with queue_depth.
+        #[structopt(long)]
+        write_period_us: Option<u64>,
+
+        /// The number of in-flight requests queued up to write to disk. Implies asynchronous
+        /// writing; mutually exclusive with write_period_us.
+        #[structopt(long)]
+        queue_depth: Option<usize>,
 
         /// Target file format.
         #[structopt(long, default_value = "json")]
@@ -66,7 +71,8 @@ fn run(opts: LoadTestOptions) -> Result<()> {
         Backend::File {
             output,
             file_count,
-            flush_period_us,
+            write_period_us,
+            queue_depth,
             serializer,
         } => {
             let (output_path, _tmp_path) = if let Some(output_path) = output {
@@ -76,30 +82,27 @@ fn run(opts: LoadTestOptions) -> Result<()> {
                 (tmp_path.path().to_path_buf(), Some(tmp_path))
             };
 
-            let flush_period = Duration::from_micros(flush_period_us);
+            if write_period_us.is_some() && queue_depth.is_some() {
+                bail!("Cannot set both write_period_us and queue_depth");
+            }
+
+            let write_policy = if let Some(write_period_us) = write_period_us {
+                file_store::WritePolicy::Synchronous {
+                    write_period: Duration::from_micros(write_period_us),
+                }
+            } else if let Some(queue_depth) = queue_depth {
+                file_store::WritePolicy::Asynchronous { queue_depth }
+            } else {
+                bail!("Must set either a queue depth or write period");
+            };
+
             let backend =
-                file_store::FileStore::new(&output_path, file_count, flush_period, serializer)?;
+                file_store::FileStore::new(&output_path, file_count, &write_policy, serializer)?;
             load_test::load_test(backend, load_params)
         }
     }?;
 
-    summarize(&all_stats)?;
-    Ok(())
-}
-
-fn summarize(all_stats: &[load_test::Stats]) -> Result<()> {
-    let total_ops: i64 = all_stats.iter().map(|s| s.ops.0).sum();
-    let total_runtime = all_stats
-        .iter()
-        .map(|s| s.runtime)
-        .max()
-        .ok_or(StoreError::NoThreadsCompleted)?;
-
-    let total_ops_per_sec = total_ops as f64 / total_runtime.as_secs_f64();
-
-    log::info!("total_ops: {}", total_ops);
-    log::info!("total_runtime: {:?}", total_runtime);
-    log::info!("total_ops_per_sec: {}", total_ops_per_sec);
+    load_test::summarize(&all_stats)?;
     Ok(())
 }
 

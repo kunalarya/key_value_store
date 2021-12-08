@@ -212,6 +212,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "crossbeam",
+ "crossbeam-channel",
  "env_logger",
  "log",
  "rand",

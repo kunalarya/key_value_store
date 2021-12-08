@@ -44,7 +44,7 @@ impl Store for MemoryStore {
 }
 
 /// Same as MemoryStore, but not thread safe.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct MemoryStoreSingleThreaded {
     values: HashMap<String, Blob>,
 }

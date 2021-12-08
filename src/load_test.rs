@@ -6,7 +6,7 @@ use crossbeam::thread;
 use rand::prelude::*;
 use structopt::clap::arg_enum;
 
-use crate::store::{Blob, Store};
+use crate::store::{Blob, Store, StoreError};
 
 arg_enum! {
     #[derive(Clone, Copy, Debug)]
@@ -41,12 +41,15 @@ pub struct LoadParams {
 }
 
 /// Total number of operations.
+#[derive(Debug)]
 pub struct Ops(pub i64);
 
 /// Operations per second.
-pub struct OpsPerSec(f64);
+#[derive(Debug)]
+pub struct OpsPerSec(pub f64);
 
 /// Performance metrics for a single thread.
+#[derive(Debug)]
 pub struct Stats {
     pub ops: Ops,
     pub runtime: Duration,
@@ -54,7 +57,7 @@ pub struct Stats {
 
 impl Stats {
     pub fn ops_per_sec(&self) -> OpsPerSec {
-        OpsPerSec(self.runtime.as_secs_f64() / (self.ops.0 as f64))
+        OpsPerSec((self.ops.0 as f64) / self.runtime.as_secs_f64())
     }
 }
 
@@ -118,4 +121,27 @@ pub fn load_test<S: Store>(mut store: S, load_params: LoadParams) -> Result<Vec<
     })
     .unwrap();
     Ok(results)
+}
+
+pub fn summarize(all_stats: &[Stats]) -> Result<()> {
+    let total_ops: i64 = all_stats.iter().map(|s| s.ops.0).sum();
+    let total_runtime = all_stats
+        .iter()
+        .map(|s| s.runtime)
+        .max()
+        .ok_or(StoreError::NoThreadsCompleted)?;
+
+    let total_ops_per_sec = total_ops as f64 / total_runtime.as_secs_f64();
+    let sum_ops_per_sec: f64 = all_stats.iter().map(|s| s.ops_per_sec().0).sum();
+    let average_ops_per_sec = sum_ops_per_sec / all_stats.len() as f64;
+
+    for s in all_stats {
+        log::info!("{:#?}", s);
+    }
+
+    log::info!("total_ops: {}", total_ops);
+    log::info!("total_runtime: {:?}", total_runtime);
+    log::info!("total_ops_per_sec: {:.2}", total_ops_per_sec);
+    log::info!("average_ops_per_sec: {:.2}", average_ops_per_sec);
+    Ok(())
 }

@@ -22,19 +22,6 @@ arg_enum! {
     }
 }
 
-/*
-impl std::str::FromStr for Serializer {
-    type Err = StoreError;
-
-    fn from_str(s: &str) -> std::result::Result<Serializer, StoreError> {
-        match s.to_lowercase().trim() {
-            "json" => Ok(Self::Json),
-            _ => Err(StoreError::UnknownSerializer(s.to_owned())),
-        }
-    }
-}
-*/
-
 impl Serializer {
     fn write<T: Serialize, W: Write>(&self, writer: W, value: &T) -> Result<()> {
         #[allow(clippy::match_single_binding)]
@@ -101,12 +88,101 @@ impl Poller {
     }
 }
 
+pub enum WritePolicy {
+    Synchronous { write_period: Duration },
+    Asynchronous { queue_depth: usize },
+}
+
+enum Writer {
+    Synchronous {
+        poller: Poller,
+        serializer: Serializer,
+        file: File,
+    },
+    Asynchronous {
+        sender: crossbeam_channel::Sender<(String, Blob)>,
+        _handle: std::thread::JoinHandle<()>,
+    },
+}
+
+impl Writer {
+    fn new(
+        policy: &WritePolicy,
+        mem_store: &MemoryStoreSingleThreaded,
+        serializer: Serializer,
+        filename: &Path,
+    ) -> Result<Self> {
+        let file = File::create(&filename)?;
+        let writer = match policy {
+            WritePolicy::Synchronous { write_period } => {
+                let poller = Poller::new(*write_period);
+                Self::Synchronous {
+                    poller,
+                    serializer,
+                    file,
+                }
+            }
+            WritePolicy::Asynchronous { queue_depth } => {
+                #[allow(clippy::type_complexity)]
+                let (sender, receiver): (
+                    crossbeam_channel::Sender<(String, Blob)>,
+                    crossbeam_channel::Receiver<(String, Blob)>,
+                ) = crossbeam_channel::bounded(*queue_depth);
+
+                // Keep a copy of the memstore state in the background thread.
+                let mut async_writer_mem_store_mirror = mem_store.clone();
+
+                let handle = std::thread::spawn(move || loop {
+                    if let Ok((key, value)) = receiver.recv() {
+                        if let Err(err) = async_writer_mem_store_mirror.put(&key, value) {
+                            // TODO: Hard failure.
+                            log::error!("put error: {:?}", err);
+                        }
+                        if let Err(err) = serializer.write(&file, &async_writer_mem_store_mirror) {
+                            // TODO: This should be a hard failure; we can imagine an "errors"
+                            // return channel that dequeues any pending write errors and handles
+                            // them appropriately.
+                            log::error!("write error: {:?}", err);
+                        }
+                    }
+                });
+                Self::Asynchronous {
+                    _handle: handle,
+                    sender,
+                }
+            }
+        };
+        Ok(writer)
+    }
+
+    fn write(
+        &mut self,
+        key: &str,
+        value: &Blob,
+        mem_store: &MemoryStoreSingleThreaded,
+    ) -> Result<()> {
+        match self {
+            Writer::Synchronous {
+                poller,
+                file,
+                serializer,
+            } => {
+                if poller.elapsed() {
+                    serializer.write(file, mem_store)?;
+                }
+            }
+            Writer::Asynchronous { sender, .. } => {
+                sender.send((key.to_owned(), value.clone()))?;
+            }
+        };
+        Ok(())
+    }
+}
+
 /// Internal representation to encapsulate file operations.
 struct BackingFile {
-    file: File,
     mem_store: MemoryStoreSingleThreaded,
-    flush_poller: Poller,
-    serializer: Serializer,
+    writer: Writer,
 }
 
 impl BackingFile {
@@ -114,7 +190,7 @@ impl BackingFile {
         size: usize,
         index: usize,
         path: &Path,
-        flush_period: Duration,
+        write_policy: &WritePolicy,
         serializer: Serializer,
     ) -> Result<Self> {
         // TODO: Use file locks, otherwise multiple threads creating backing files could
@@ -148,13 +224,10 @@ impl BackingFile {
         } else {
             MemoryStoreSingleThreaded::new()
         };
-        let file = File::create(&filename)?;
-        Ok(Self {
-            file,
-            mem_store,
-            flush_poller: Poller::new(flush_period),
-            serializer,
-        })
+
+        let writer = Writer::new(write_policy, &mem_store, serializer, &filename)?;
+
+        Ok(Self { mem_store, writer })
     }
 
     fn read(&self, key: &str) -> Result<Blob> {
@@ -162,16 +235,8 @@ impl BackingFile {
     }
 
     fn write(&mut self, key: &str, value: Blob) -> Result<()> {
+        self.writer.write(key, &value, &self.mem_store)?;
         self.mem_store.put(key, value)?;
-        // Flush if enough time has passed.
-        if self.flush_poller.elapsed() {
-            self.flush()?;
-        }
-        Ok(())
-    }
-
-    fn flush(&mut self) -> Result<()> {
-        self.serializer.write(&self.file, &self.mem_store)?;
         Ok(())
     }
 }
@@ -186,7 +251,7 @@ impl FileStore {
     pub fn new(
         output_path: &Path,
         file_count: usize,
-        flush_period: Duration,
+        write_policy: &WritePolicy,
         serializer: Serializer,
     ) -> Result<Self> {
         // Preinitialize backing stores.
@@ -196,7 +261,7 @@ impl FileStore {
                 file_count,
                 index,
                 output_path,
-                flush_period,
+                write_policy,
                 serializer.clone(),
             )?)));
         }
