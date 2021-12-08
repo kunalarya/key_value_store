@@ -43,3 +43,61 @@ cargo run --release -- \
     --load-time-sec=10 \
     file --file-count=120 --queue-depth 1024 --serializer=json
 ```
+
+## Design Space
+
+The design space is significant, and will vary based on hardware (SSDs, CPU, etc.).
+
+To give a sense of how file-based backends perform, it's helpful to run a memory-only baseline:
+
+```
+cargo run --release -- \
+    --threads=4 \
+    --load-time-sec=10 \
+    memory
+```
+
+On a 2015 Macbook, this produces:
+```
+total_ops: 1708513
+total_runtime: 10.000090816s
+total_ops_per_sec: 170849.75
+average_ops_per_sec: 42712.69
+```
+
+We can then determine, say, that we are tolerant to a few milliseconds of data loss
+due to application-level robustness. So we may consider the asynchronous writer with
+a queue depth of 8192, sharding the files across 128 files (default ulimit for MacOS):
+```
+cargo run --release -- \
+    --threads=4 \
+    --load-time-sec=10 \
+    file --file-count=128 --queue-depth=8192
+```
+
+We see that we run ~4% of the total throughput, which is not surprising given we
+added disk I/O in the loop. However, performance is still reasonable at roughly
+1800 operations per second per thread.
+```
+total_ops: 75983
+total_runtime: 10.03314522s
+total_ops_per_sec: 7573.20
+average_ops_per_sec: 1893.46
+```
+
+Changing the backend from JSON to CBOR does not improve the runtime, suggesting
+that we're sufficiently latency-hiding.
+```
+cargo run --release -- \
+    --threads=4 \
+    --load-time-sec=10 \
+    file --file-count=128 --queue-depth=8192 --serializer=cbor
+```
+
+Resulting in roughly the same performance:
+```
+total_ops: 79581
+total_runtime: 10.085022077s
+total_ops_per_sec: 7891.01
+average_ops_per_sec: 1972.77
+```
