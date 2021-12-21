@@ -1,7 +1,7 @@
 use std::collections::hash_map::DefaultHasher;
 use std::fs::File;
 use std::hash::{Hash, Hasher};
-use std::io::{Read, Write};
+use std::io::{BufWriter, Read, Write};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -25,17 +25,17 @@ arg_enum! {
 
 impl Serializer {
     fn write<T: Serialize, W: Write>(&self, writer: W, value: &T) -> Result<()> {
-        #[allow(clippy::match_single_binding)]
+        let mut writer = BufWriter::new(writer);
         match self {
-            Self::Json => serde_json::to_writer(writer, value)?,
-            Self::Cbor => ciborium::ser::into_writer(value, writer)?,
+            Self::Json => serde_json::to_writer(&mut writer, value)?,
+            Self::Cbor => ciborium::ser::into_writer(value, &mut writer)?,
             // Add new serialization formats here.
         };
+        writer.flush()?;
         Ok(())
     }
 
     fn read<T: DeserializeOwned, R: Read>(&self, reader: R) -> Result<T> {
-        #[allow(clippy::match_single_binding)]
         Ok(match self {
             Self::Json => serde_json::from_reader(reader)?,
             Self::Cbor => ciborium::de::from_reader(reader)?,
@@ -116,6 +116,7 @@ impl Writer {
         filename: &Path,
     ) -> Result<Self> {
         let file = File::create(&filename)?;
+
         let writer = match policy {
             WritePolicy::Synchronous { write_period } => {
                 let poller = Poller::new(*write_period);
